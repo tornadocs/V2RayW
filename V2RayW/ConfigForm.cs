@@ -7,56 +7,72 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.Diagnostics;
+using System.Web.Script.Serialization;
 
 namespace V2RayW
 {
 
     public partial class ConfigForm : Form
     {
-        public static List<Profile> profiles = new List<Profile>();
-        public static int selectedServerIndex;
+        private int localPort = 1081;
+        private int httpPort = 8081;
+        private bool udpSupport = false;
+        private bool shareOverLan = false;
+        private string dnsString = "localhost";
+        private LogLevel logLevel = LogLevel.none;
+        public List<ServerProfile> profiles = new List<ServerProfile>();
+        public int selectedServerIndex = 1;
+        private int mainInboundType = 0;
+        private bool alarmUnknown = true;
+
+        public ServerProfile SelectedProfile()
+        {
+            return this.profiles[this.selectedServerIndex];
+        }
 
         public ConfigForm()
         {
             InitializeComponent();
+            I18N.InitControl(this);
         }
 
         private void buttonCancel_Click(object sender, EventArgs e)
         {
             this.Close();
         }
-
+        
         private void buttonSave_Click(object sender, EventArgs e)
         {
-            // change profiles in memory
+            Program.localPort = this.localPort;
+            Program.httpPort = this.httpPort;
+            Program.udpSupport = this.udpSupport;
+            Program.shareOverLan = this.shareOverLan;
+            Program.dnsString = String.Copy(this.dnsString);
+            Program.logLevel = this.logLevel;
             Program.profiles.Clear();
-            if (profiles.Count > 0)
+            foreach (var p in this.profiles)
             {
-                foreach (Profile p in profiles)
-                {
-                    Program.profiles.Add(p.DeepCopy());
-                }
+                
+                Program.profiles.Add(p.DeepCopy());
+            };
+            if(this.selectedServerIndex < Program.profiles.Count && this.selectedServerIndex >= 0)
+            {
+                Program.selectedServerIndex = this.selectedServerIndex;
             } else
             {
-                Program.proxyIsOn = false;
+                if(Program.profiles.Count > 0)
+                {
+                    Program.selectedServerIndex = 0;
+                } else
+                {
+                    Program.selectedServerIndex = -1;
+                }
             }
-            Program.selectedServerIndex = ConfigForm.profiles.Count > 0 ? listBoxServers.SelectedIndex : -1;
-
-            // save to file
-            Properties.Settings.Default.inProtocol = comboBoxInP.SelectedIndex; // 0:socks, 1:http
-            Properties.Settings.Default.localPort = Program.strToInt(textBoxLocalPort.Text, 1080);
-            Properties.Settings.Default.udpSupport = checkBoxUDP.Checked;
-            Properties.Settings.Default.dns = textBoxDNS.Text != "" ? textBoxDNS.Text : "localhost";
-            var profileArray = Program.profiles.Select(p => Program.profileToStr(p));
-            Properties.Settings.Default.profilesStr = String.Join("\t", profileArray);
-            Properties.Settings.Default.alarmUnknown = checkBoxAlarm.Checked;
-            Properties.Settings.Default.Save();
-
-            Program.updateSystemProxy();
-            Program.mainForm.updateMenu();
+            Program.selectedServerIndex = this.selectedServerIndex;
+            Program.mainInboundType = this.mainInboundType;
+            Program.alarmUnknown = this.alarmUnknown;
+            Program.configurationDidChange();
             this.Close();
         }
 
@@ -68,53 +84,41 @@ namespace V2RayW
 
         private void ConfigForm_Load(object sender, EventArgs e)
         {
-            checkBoxAlarm.Checked = Properties.Settings.Default.alarmUnknown;
-            this.Icon = Properties.Resources.vw256;
-            selectedServerIndex = Program.selectedServerIndex;
-            profiles.Clear();
-            foreach (Profile p in Program.profiles)
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            //copy settings
+            this.localPort = Program.localPort;
+            this.httpPort = Program.httpPort;
+            this.udpSupport = Program.udpSupport;
+            this.shareOverLan = Program.shareOverLan;
+            this.dnsString = String.Copy(Program.dnsString);
+            this.logLevel = Program.logLevel;
+            this.profiles.Clear();
+            foreach(var p in Program.profiles)
             {
-                profiles.Add(p.DeepCopy());
-            }
+                this.profiles.Add(p.DeepCopy());
+            };
+            this.selectedServerIndex = Program.selectedServerIndex;
+            this.mainInboundType = Program.mainInboundType;
+            this.alarmUnknown = Program.alarmUnknown;
+            
+            // update views
+            this.Icon = Properties.Resources.vw256;
 
-            //Properties.Settings.Default.Upgrade();
-            comboBoxInP.SelectedIndex = Properties.Settings.Default.inProtocol;
-            textBoxLocalPort.Text = Properties.Settings.Default.localPort.ToString();
-            checkBoxUDP.Checked = Properties.Settings.Default.udpSupport;
-            textBoxDNS.Text = Properties.Settings.Default.dns;
+            comboBoxInP.SelectedIndex = Program.mainInboundType;
+            textBoxLocalPort.Text = this.localPort.ToString();
+            checkBoxUDP.Checked = this.udpSupport;
+            textBoxHttpPort.Text = this.httpPort.ToString();
+            checkBoxShareOverLan.Checked = this.shareOverLan;
+            textBoxDNS.Text = this.dnsString;
+            comboBoxLog.SelectedIndex = (int)this.logLevel;
+            checkBoxAlarm.Checked = this.alarmUnknown;
             loadProfiles();
-        }
-
-        private void groupBoxServer_Enter(object sender, EventArgs e)
-        {
-
-        }
-
-        private void panel1_Paint(object sender, PaintEventArgs e)
-        {
-
-        }
-
-        private void label3_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void label9_Click(object sender, EventArgs e)
-        {
-
         }
 
         private void buttonAdd_Click(object sender, EventArgs e)
         {
-            profiles.Add(new Profile());
+            profiles.Add(new ServerProfile());
             selectedServerIndex = profiles.Count() - 1;
-            /*
-            for(int i = 0; i < profiles.Count(); i++)
-            {
-                Debug.WriteLine(profiles[i].address);
-            }
-            Debug.WriteLine(selectedServerIndex);*/
             this.loadProfiles();
         }
 
@@ -125,34 +129,37 @@ namespace V2RayW
             {
                 listBoxServers.Items.Add(p.remark == "" ? p.address : p.remark);
             }
-            if (selectedServerIndex >= 0)
+            if (selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
                 listBoxServers.SelectedIndex = selectedServerIndex;
-            } else
-            {
-                textBoxAddress.Text = "";
-                textBoxPort.Text = "";
-                textBoxUserId.Text = "";
-                textBoxAlterID.Text = "";
-                textBoxRemark.Text = "";
-                checkBoxAllowP.Checked = false;
-                comboBoxNetwork.SelectedIndex = 0;
-                comboBoxSecurity.SelectedIndex = 0;
             }
+            listBoxServers_SelectedIndexChanged(null, null);
         }
 
         private void listBoxServers_SelectedIndexChanged(object sender, EventArgs e)
         {
             selectedServerIndex = listBoxServers.SelectedIndex;
-            var sp = profiles[selectedServerIndex];
-            textBoxAddress.Text = sp.address;
-            textBoxPort.Text = sp.port.ToString();
-            textBoxUserId.Text = sp.userId;
-            textBoxAlterID.Text = sp.alterId.ToString();
-            textBoxRemark.Text = sp.remark;
-            checkBoxAllowP.Checked = sp.allowPassive;
-            comboBoxNetwork.SelectedIndex = sp.network;
-            comboBoxSecurity.SelectedIndex = sp.security;
+            if (selectedServerIndex >= 0 && selectedServerIndex < this.profiles.Count())
+            {
+                var sp = profiles[selectedServerIndex];
+                textBoxAddress.Text = sp.address;
+                textBoxPort.Text = sp.port.ToString();
+                textBoxUserId.Text = sp.userId;
+                textBoxAlterID.Text = sp.alterId.ToString();
+                textBoxRemark.Text = sp.remark;
+                comboBoxNetwork.SelectedIndex = (int)sp.network;
+                comboBoxSecurity.SelectedIndex = (int)sp.security;
+                buttonTS.Enabled = true;
+            } else
+            {
+                textBoxPort.Text = "";
+                textBoxUserId.Text = "";
+                textBoxAlterID.Text = "";
+                textBoxRemark.Text = "";
+                comboBoxNetwork.SelectedIndex = 0;
+                comboBoxSecurity.SelectedIndex = 0;
+                buttonTS.Enabled = false;
+            }
         }
 
         private void buttonRemove_Click(object sender, EventArgs e)
@@ -161,17 +168,27 @@ namespace V2RayW
             {
                 return;
             }
-            profiles.RemoveAt(selectedServerIndex);
-            if(selectedServerIndex >= profiles.Count())
+            if(selectedServerIndex >= 0 &&
+                selectedServerIndex < profiles.Count())
             {
+                this.profiles.RemoveAt(this.selectedServerIndex);
+                if(this.profiles.Count() == 0)
+                {
+                    this.profiles.Add(new ServerProfile { remark = "placeholder" });
+                }
                 selectedServerIndex -= 1;
+                if(selectedServerIndex == -1 && this.profiles.Count() > 0 )
+                {
+                    selectedServerIndex = 0;
+                }
+                loadProfiles();
+
             }
-            loadProfiles();
         }
 
         private void textBoxAddress_TextChanged(object sender, EventArgs e)
         {
-            if(selectedServerIndex >= 0)
+            if(selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
                 profiles[selectedServerIndex].address = textBoxAddress.Text;
                 loadProfiles();
@@ -180,7 +197,7 @@ namespace V2RayW
 
         private void textBoxPort_TextChanged(object sender, EventArgs e)
         {
-            if (selectedServerIndex >= 0)
+            if (selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
                 profiles[selectedServerIndex].port = Program.strToInt(textBoxPort.Text, 10086);
             }
@@ -188,7 +205,7 @@ namespace V2RayW
 
         private void textBoxUserId_TextChanged(object sender, EventArgs e)
         {
-            if (selectedServerIndex >= 0)
+            if (selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
                 profiles[selectedServerIndex].userId = textBoxUserId.Text;
             }
@@ -196,7 +213,7 @@ namespace V2RayW
 
         private void textBoxAlterID_TextChanged(object sender, EventArgs e)
         {
-            if (selectedServerIndex >= 0)
+            if (selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
                 profiles[selectedServerIndex].alterId = Program.strToInt(textBoxAlterID.Text, 0);
             }
@@ -204,40 +221,75 @@ namespace V2RayW
 
         private void textBoxRemark_TextChanged(object sender, EventArgs e)
         {
-            if (selectedServerIndex >= 0)
+            if (selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
                 profiles[selectedServerIndex].remark = textBoxRemark.Text;
                 loadProfiles();
             }
         }
-
-        private void checkBoxAllowP_CheckedChanged(object sender, EventArgs e)
-        {
-            if (selectedServerIndex >= 0)
-            {
-                profiles[selectedServerIndex].allowPassive = checkBoxAllowP.Checked;
-            }
-        }
+        
 
         private void comboBoxNetwork_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (selectedServerIndex >= 0)
+            if (selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
-                profiles[selectedServerIndex].network = comboBoxNetwork.SelectedIndex;
+                profiles[selectedServerIndex].network = (NetWorkType)comboBoxNetwork.SelectedIndex;
             }
         }
 
         private void comboBoxInP_SelectedIndexChanged(object sender, EventArgs e)
         {
-            checkBoxUDP.Visible = comboBoxInP.SelectedIndex == 0;
+            this.mainInboundType = comboBoxInP.SelectedIndex; // 0: http, 1:socks
         }
 
         private void comboBoxSecurity_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (selectedServerIndex >= 0)
+            if (selectedServerIndex >= 0 && selectedServerIndex < profiles.Count())
             {
-                profiles[selectedServerIndex].security = comboBoxSecurity.SelectedIndex;
+                profiles[selectedServerIndex].security = (SecurityType)comboBoxSecurity.SelectedIndex;
             }
+        }
+
+        private void buttonImport_Click(object sender, EventArgs e)
+        {
+            var importWindow = new FormImport();
+            importWindow.ShowDialog(this);
+        }
+
+        private void checkBoxShareOverLan_CheckedChanged(object sender, EventArgs e)
+        {
+            this.shareOverLan = checkBoxShareOverLan.Checked;
+        }
+
+        private void textBoxLocalPort_TextChanged(object sender, EventArgs e)
+        {
+            this.localPort = Program.strToInt(textBoxLocalPort.Text, 1081);
+        }
+
+        private void checkBoxUDP_CheckedChanged(object sender, EventArgs e)
+        {
+            this.udpSupport = checkBoxUDP.Checked;
+        }
+
+        private void textBoxHttpPort_TextChanged(object sender, EventArgs e)
+        {
+            this.httpPort = Program.strToInt(textBoxHttpPort.Text, 8081);
+
+        }
+
+        private void textBoxDNS_TextChanged(object sender, EventArgs e)
+        {
+            this.dnsString = textBoxDNS.Text.Trim();
+        }
+
+        private void checkBoxAlarm_CheckedChanged(object sender, EventArgs e)
+        {
+            this.alarmUnknown = checkBoxAlarm.Checked;
+        }
+
+        private void comboBoxLog_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            this.logLevel = (LogLevel)comboBoxLog.SelectedIndex;
         }
     }
 }
